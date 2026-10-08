@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "Duo - Private Two-Person Chat",
+  "short_name": "Duo",
+  "description": "Secure, private, mobile-first two-person chat with real-time messaging, end-to-end isolation, media sharing, and offline sync.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#090d16",
+  "theme_color": "#090d16",
+  "categories": ["social", "communication", "utilities"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

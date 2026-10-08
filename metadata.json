@@ -1,0 +1,6 @@
+{
+  "name": "Duo - Private Two-Person Chat",
+  "description": "Secure, private, mobile-first two-person chat with real-time messaging, end-to-end isolation, media sharing, and offline sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

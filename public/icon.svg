@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="bubble1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#4f46e5"/>
+    </linearGradient>
+    <linearGradient id="bubble2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  <!-- Primary Chat Bubble -->
+  <path d="M140 180 C140 135 175 100 220 100 L320 100 C365 100 400 135 400 180 L400 240 C400 285 365 320 320 320 L240 320 L160 380 L180 320 C155 315 140 285 140 240 Z" fill="url(#bubble1)" opacity="0.95"/>
+  <!-- Secondary Subtle Chat Accent Bubble -->
+  <path d="M100 260 C100 225 125 200 160 200 L230 200 C265 200 290 225 290 260 L290 300 C290 335 265 360 230 360 L180 360 L120 405 L135 360 C115 355 100 330 100 300 Z" fill="url(#bubble2)" opacity="0.85"/>
+  <!-- Lock / Privacy Dots -->
+  <circle cx="270" cy="210" r="14" fill="#ffffff" opacity="0.9"/>
+  <circle cx="320" cy="210" r="14" fill="#ffffff" opacity="0.9"/>
+  <circle cx="370" cy="210" r="14" fill="#ffffff" opacity="0.9"/>
+</svg>
