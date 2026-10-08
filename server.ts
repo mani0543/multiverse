@@ -521,19 +521,27 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   }
 });
 
-// Frontend Vite Setup
+// Frontend Vite / Static Serving Setup
 async function startServer() {
   await db.init();
 
-  if (!isProduction) {
+  const distPath = path.resolve(process.cwd(), 'dist');
+  const distIndexExists = fs.existsSync(path.join(distPath, 'index.html'));
+  const serveStatic = isProduction || process.env.RENDER === 'true' || distIndexExists;
+
+  if (!serveStatic) {
+    console.log('[Server] Starting in development mode with Vite middlewares (allowing all hosts)');
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(process.cwd(), 'dist');
+    console.log('[Server] Serving optimized production build from dist/');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
