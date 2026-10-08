@@ -8,14 +8,23 @@ import {
   X,
   Smile,
   Loader2,
+  Reply,
 } from 'lucide-react';
 import { socketClient } from '../services/socket.js';
 import { formatFileSize } from '../utils/format.js';
+import type { ReplyToPreview } from '../types.js';
 
 interface MessageComposerProps {
-  onSendMessage: (text: string) => Promise<void>;
-  onSendAttachment: (file: File, caption?: string, onProgress?: (percent: number) => void) => Promise<void>;
+  onSendMessage: (text: string, replyTo?: ReplyToPreview | null) => Promise<void>;
+  onSendAttachment: (
+    file: File,
+    caption?: string,
+    replyTo?: ReplyToPreview | null,
+    onProgress?: (percent: number) => void
+  ) => Promise<void>;
   disabled?: boolean;
+  replyingTo?: ReplyToPreview | null;
+  onCancelReply?: () => void;
 }
 
 const COMMON_EMOJIS = ['❤️', '👍', '😊', '😂', '🔥', '🎉', '🙏', '🙌', '✨', '👀', '💯', '👋'];
@@ -24,6 +33,8 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   onSendMessage,
   onSendAttachment,
   disabled,
+  replyingTo,
+  onCancelReply,
 }) => {
   const [text, setText] = useState('');
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
@@ -41,6 +52,13 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
   const imageInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const typingTimerRef = useRef<any>(null);
+
+  // Auto-focus when reply is clicked
+  useEffect(() => {
+    if (replyingTo && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [replyingTo]);
 
   // Auto-resize textarea
   useEffect(() => {
@@ -71,14 +89,19 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
 
   const handleSend = async () => {
     if (selectedFile) {
-      // Send attachment
       setIsUploading(true);
       setUploadProgress(0);
       try {
-        await onSendAttachment(selectedFile, caption || undefined, (progress) => {
-          setUploadProgress(progress);
-        });
+        await onSendAttachment(
+          selectedFile,
+          caption || undefined,
+          replyingTo,
+          (progress) => {
+            setUploadProgress(progress);
+          }
+        );
         clearSelectedFile();
+        if (onCancelReply) onCancelReply();
       } catch (err) {
         console.error('Failed to send attachment:', err);
       } finally {
@@ -90,17 +113,20 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
     if (!text.trim() || disabled) return;
 
     const outgoing = text;
+    const currentReplyTo = replyingTo;
     setText('');
+    if (onCancelReply) onCancelReply();
+
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
     socketClient.sendTyping(false);
 
     try {
-      await onSendMessage(outgoing);
+      await onSendMessage(outgoing, currentReplyTo);
     } catch (err) {
       console.error('Failed to send message:', err);
-      setText(outgoing); // restore on error
+      setText(outgoing);
     }
   };
 
@@ -118,7 +144,6 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
       setPreviewUrl(null);
     }
 
-    // Reset input
     e.target.value = '';
   };
 
@@ -162,6 +187,40 @@ export const MessageComposer: React.FC<MessageComposerProps> = ({
         onChange={handleFileChosen}
         className="hidden"
       />
+
+      {/* WhatsApp-Style Replying To Preview Bar */}
+      {replyingTo && (
+        <div className="px-4 py-2 bg-slate-950/95 border-b border-slate-800 flex items-center justify-between animate-slide-up">
+          <div className="flex items-center gap-2.5 min-w-0 border-l-4 border-indigo-500 pl-2.5">
+            <Reply className="w-4 h-4 text-indigo-400 shrink-0" />
+            <div className="min-w-0">
+              <span className="text-[11px] font-semibold text-indigo-300 block leading-tight">
+                Replying to {replyingTo.sender_name || 'Participant'}
+              </span>
+              <span className="text-xs text-slate-300 truncate block leading-tight mt-0.5">
+                {replyingTo.message_type === 'image' ? (
+                  <span className="flex items-center gap-1">
+                    <ImageIcon className="w-3 h-3 text-indigo-400" /> Photo
+                  </span>
+                ) : replyingTo.message_type === 'file' ? (
+                  <span className="flex items-center gap-1">
+                    <FileText className="w-3 h-3 text-indigo-400" /> {replyingTo.file_name || 'Document'}
+                  </span>
+                ) : (
+                  replyingTo.text_content || 'Message'
+                )}
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={onCancelReply}
+            aria-label="Cancel reply"
+            className="p-1 rounded-full text-slate-400 hover:text-white transition shrink-0 ml-2"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Attachment Pre-send Preview Bar */}
       {selectedFile && (

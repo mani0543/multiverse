@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
-import type { ChatRoom, ConnectionState, Message } from '../types.js';
+import type { ChatRoom, ConnectionState, Message, ReplyToPreview } from '../types.js';
 import { useAuth } from '../context/AuthContext.js';
 import { api } from '../services/api.js';
 import { socketClient } from '../services/socket.js';
@@ -46,6 +46,7 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
   const [searchOpen, setSearchOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<ReplyToPreview | null>(null);
 
   // Fullscreen Image Lightbox
   const [lightboxData, setLightboxData] = useState<{
@@ -216,6 +217,12 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       }
     });
 
+    const unsubDeleted = socketClient.onMessageDeleted((data) => {
+      if (data.roomId === roomId) {
+        setMessages((prev) => prev.filter((m) => m.id !== data.messageId));
+      }
+    });
+
     return () => {
       unsubState();
       unsubMsg();
@@ -224,6 +231,7 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       unsubTyping();
       unsubPresence();
       unsubPeerJoined();
+      unsubDeleted();
     };
   }, [roomId, user?.id]);
 
@@ -301,8 +309,8 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
     }
   };
 
-  // 4. Send Message (Text) with Optimistic UI
-  const handleSendMessage = async (text: string) => {
+  // 4. Send Message (Text) with Optimistic UI & WhatsApp-style Reply-to
+  const handleSendMessage = async (text: string, replyTo?: ReplyToPreview | null) => {
     if (!user) return;
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const optimisticMessage: Message = {
@@ -316,14 +324,16 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       delivered_at: null,
       read_at: null,
       isPending: true,
+      reply_to: replyTo || null,
     };
 
     setMessages((prev) => [...prev, optimisticMessage]);
+    setReplyingTo(null);
     sound.playSentChime();
     scrollToBottom();
 
     try {
-      const res = await api.sendMessage(roomId, text, tempId);
+      const res = await api.sendMessage(roomId, text, tempId, replyTo);
       setMessages((prev) =>
         prev.map((m) => (m.id === tempId ? { ...res.message, isPending: false } : m))
       );
@@ -335,10 +345,11 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
     }
   };
 
-  // 5. Send Attachment (Image or File)
+  // 5. Send Attachment (Image or File) with WhatsApp-style Reply-to
   const handleSendAttachment = async (
     file: File,
     caption?: string,
+    replyTo?: ReplyToPreview | null,
     onProgress?: (percent: number) => void
   ) => {
     if (!user) return;
@@ -354,6 +365,7 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       created_at: Date.now(),
       updated_at: Date.now(),
       isPending: true,
+      reply_to: replyTo || null,
       attachment: {
         id: `att_${tempId}`,
         message_id: tempId,
@@ -368,10 +380,11 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
     };
 
     setMessages((prev) => [...prev, optimisticMessage]);
+    setReplyingTo(null);
     scrollToBottom();
 
     try {
-      const res = await api.uploadAttachment(roomId, file, caption, tempId, onProgress);
+      const res = await api.uploadAttachment(roomId, file, caption, tempId, replyTo, onProgress);
       sound.playSentChime();
       setMessages((prev) =>
         prev.map((m) => (m.id === tempId ? { ...res.message, isPending: false } : m))
@@ -380,6 +393,16 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       alert(err.message || 'File upload failed');
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
       throw err;
+    }
+  };
+
+  // 6. Delete Message
+  const handleDeleteMessage = async (messageId: string) => {
+    try {
+      await api.deleteMessage(roomId, messageId);
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    } catch (err: any) {
+      alert(err.message || 'Failed to delete message');
     }
   };
 
@@ -491,6 +514,9 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
                 onOpenImage={(url, fileName, downloadUrl) =>
                   setLightboxData({ url, fileName, downloadUrl })
                 }
+                onReply={(replyData) => setReplyingTo(replyData)}
+                onDelete={handleDeleteMessage}
+                onJumpToMessage={handleJumpToMessage}
               />
             </React.Fragment>
           );
@@ -503,6 +529,8 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       <MessageComposer
         onSendMessage={handleSendMessage}
         onSendAttachment={handleSendAttachment}
+        replyingTo={replyingTo}
+        onCancelReply={() => setReplyingTo(null)}
       />
 
       {/* Modals */}

@@ -4,6 +4,7 @@ import { RoomLobby } from './components/RoomLobby.js';
 import { ChatRoomView } from './components/ChatRoomView.js';
 import { AuthModal } from './components/AuthModal.js';
 import { SettingsModal } from './components/SettingsModal.js';
+import { AdminPortalModal } from './components/AdminPortalModal.js';
 import { api } from './services/api.js';
 import { ShieldAlert, Loader2 } from 'lucide-react';
 
@@ -14,6 +15,7 @@ function AppContent() {
   const [joiningInvite, setJoiningInvite] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
 
   // Dark mode state
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
@@ -47,11 +49,15 @@ function AppContent() {
     }
   }, []);
 
-  // Check URL path for direct room invitation (e.g. /chat/:roomToken or #chat/:roomToken)
+  // Check URL path for direct room invitation or secret super admin trigger (#admin, #superadmin, /admin)
   useEffect(() => {
     const checkPathForInvite = () => {
       const pathname = window.location.pathname;
       const hash = window.location.hash;
+
+      if (hash === '#admin' || hash === '#superadmin' || pathname === '/admin') {
+        setAdminOpen(true);
+      }
 
       let token: string | null = null;
       if (pathname.startsWith('/chat/')) {
@@ -67,7 +73,22 @@ function AppContent() {
 
     checkPathForInvite();
     window.addEventListener('popstate', checkPathForInvite);
-    return () => window.removeEventListener('popstate', checkPathForInvite);
+    window.addEventListener('hashchange', checkPathForInvite);
+
+    // Secret keyboard shortcut (Ctrl+Shift+A or Cmd+Shift+A)
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'A' || e.key === 'a')) {
+        e.preventDefault();
+        setAdminOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      window.removeEventListener('popstate', checkPathForInvite);
+      window.removeEventListener('hashchange', checkPathForInvite);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
   }, []);
 
   // Attempt to join pending invite once authenticated
@@ -126,6 +147,15 @@ function AppContent() {
               : undefined
           }
         />
+        <AdminPortalModal
+          isOpen={adminOpen}
+          onClose={() => {
+            setAdminOpen(false);
+            if (window.location.hash.includes('admin')) {
+              window.history.replaceState({}, '', '/');
+            }
+          }}
+        />
       </div>
     );
   }
@@ -180,6 +210,16 @@ function AppContent() {
         onClose={() => setSettingsOpen(false)}
         isDarkMode={isDarkMode}
         onToggleTheme={toggleTheme}
+      />
+
+      <AdminPortalModal
+        isOpen={adminOpen}
+        onClose={() => {
+          setAdminOpen(false);
+          if (window.location.hash.includes('admin')) {
+            window.history.replaceState({}, '', '/');
+          }
+        }}
       />
     </div>
   );

@@ -1,18 +1,41 @@
+import './src/server/env.ts';
+
+// Sanitize CLOUDINARY_URL if user pasted with "CLOUDINARY_URL=" prefix or quotes
+if (process.env.CLOUDINARY_URL) {
+  let cUrl = process.env.CLOUDINARY_URL.trim();
+  if (cUrl.startsWith('export ')) cUrl = cUrl.substring(7).trim();
+  if (cUrl.startsWith('CLOUDINARY_URL=')) cUrl = cUrl.substring('CLOUDINARY_URL='.length).trim();
+  cUrl = cUrl.replace(/^["']|["']$/g, '').trim();
+  if (cUrl.startsWith('cloudinary://')) {
+    process.env.CLOUDINARY_URL = cUrl;
+  } else {
+    delete process.env.CLOUDINARY_URL;
+  }
+}
+
 import express from 'express';
 import multer from 'multer';
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { db, UPLOADS_DIR, type User } from './src/server/db.ts';
 import { uploadMiddleware, sanitizeFilename } from './src/server/storage.ts';
 import { ChatSocketServer } from './src/server/socket.ts';
+import { uploadToCloudinary, deleteFromCloudinary, isCloudinaryEnabled } from './src/server/cloudinary.ts';
 
 const app = express();
 const server = http.createServer(app);
 const socketServer = new ChatSocketServer(server);
 
 const isProduction = process.env.NODE_ENV === 'production';
-const PORT = Number(process.env.PORT) || 3000;
+// In Render, PORT is assigned dynamically (e.g. 10000). In AI Studio preview, port 8080 is reserved for nginx, so dev server runs on 3000.
+const PORT = process.env.PORT && process.env.PORT !== '8080' ? Number(process.env.PORT) : 3000;
+
+// Admin authentication setup (configurable via ADMIN_PASSWORD)
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'DuoSuperAdmin@2026';
+const adminSessions = new Set<string>();
 
 app.use(express.json());
 
@@ -66,16 +89,114 @@ async function requireRoomMember(req: express.Request, res: express.Response, ne
   }
 }
 
+// Super Admin auth middleware
+function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Admin authentication required' });
+    return;
+  }
+  const token = authHeader.substring(7).trim();
+  if (!adminSessions.has(token)) {
+    res.status(403).json({ error: 'Invalid or expired admin session' });
+    return;
+  }
+  next();
+}
+
 // Health check endpoint for Render monitoring
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
     database: db.getStatus(),
+    cloudinary: isCloudinaryEnabled() ? 'enabled' : 'fallback-local',
     timestamp: Date.now(),
   });
 });
 
-// ---------------- API Routes ----------------
+// ---------------- Super Admin Management Routes ----------------
+
+app.post('/api/admin/login', (req, res) => {
+  const { username, password } = req.body;
+  if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
+    const adminToken = `adm_${crypto.randomBytes(32).toString('hex')}`;
+    adminSessions.add(adminToken);
+    res.json({ success: true, token: adminToken, username: ADMIN_USERNAME });
+  } else {
+    res.status(401).json({ error: 'Invalid super admin credentials' });
+  }
+});
+
+app.get('/api/admin/rooms', requireAdminAuth, async (_req, res) => {
+  try {
+    const rooms = await db.getAllRoomsForAdmin();
+    res.json({ rooms, total: rooms.length });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch admin rooms' });
+  }
+});
+
+app.get('/api/admin/rooms/:roomId/messages', requireAdminAuth, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const { messages } = await db.getMessages(roomId, 200);
+    const room = await db.getRoomById(roomId);
+    const members = await db.getRoomMembers(roomId);
+    res.json({ room, members, messages });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch room messages' });
+  }
+});
+
+app.delete('/api/admin/rooms/:roomId/messages/:messageId', requireAdminAuth, async (req, res) => {
+  try {
+    const { roomId, messageId } = req.params;
+    const { success, attachment } = await db.deleteMessage(messageId, roomId);
+    if (!success) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+
+    if (attachment?.cloudinary_public_id) {
+      deleteFromCloudinary(attachment.cloudinary_public_id, attachment.mime_type).catch(() => {});
+    }
+
+    await socketServer.notifyMessageDeleted(roomId, messageId);
+    res.json({ success: true, messageId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete message' });
+  }
+});
+
+app.delete('/api/admin/rooms/:roomId', requireAdminAuth, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    await db.deleteRoomForAdmin(roomId);
+    res.json({ success: true, roomId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete room' });
+  }
+});
+
+app.get('/api/admin/stats', requireAdminAuth, async (_req, res) => {
+  try {
+    const rooms = await db.getAllRoomsForAdmin();
+    let totalMessages = 0;
+    for (const r of rooms) {
+      totalMessages += r.messageCount;
+    }
+    res.json({
+      totalRooms: rooms.length,
+      totalMessages,
+      database: db.getStatus(),
+      cloudinary: isCloudinaryEnabled() ? 'active' : 'disabled',
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to fetch stats' });
+  }
+});
+
+// ---------------- Standard Chat API Routes ----------------
 
 // 1. Auth & Identity
 app.post('/api/auth/register', async (req, res) => {
@@ -314,25 +435,25 @@ app.get('/api/rooms/:roomId/messages', requireAuth, requireRoomMember, async (re
   }
 });
 
-// 4. Send Message (Text)
+// 4. Send Message (Text) with WhatsApp-style Reply-to
 app.post('/api/rooms/:roomId/messages', requireAuth, requireRoomMember, async (req, res) => {
   try {
     const user = (req as any).user as User;
     const roomId = req.params.roomId;
-    const { text, clientMsgId } = req.body;
+    const { text, clientMsgId, replyTo } = req.body;
 
     if (!text || typeof text !== 'string' || !text.trim()) {
       res.status(400).json({ error: 'Message text cannot be empty' });
       return;
     }
 
-    // Idempotent creation with clientMsgId if provided
     const message = await db.createMessage({
       id: clientMsgId,
       roomId,
       senderId: user.id,
       messageType: 'text',
       textContent: text.trim(),
+      replyTo: replyTo || null,
     });
 
     await socketServer.notifyNewMessage(message);
@@ -343,7 +464,7 @@ app.post('/api/rooms/:roomId/messages', requireAuth, requireRoomMember, async (r
   }
 });
 
-// 5. Upload Attachment (Image or File)
+// 5. Upload Attachment (Image, PDF, Document, etc.) with Cloudinary Support
 app.post(
   '/api/rooms/:roomId/attachments',
   requireAuth,
@@ -364,6 +485,20 @@ app.post(
       const safeName = sanitizeFilename(file.originalname);
       const attachmentId = `att_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
+      // Upload to Cloudinary if configured
+      let cloudinaryUrl: string | undefined;
+      let cloudinaryPublicId: string | undefined;
+
+      try {
+        const cloudUpload = await uploadToCloudinary(file.path, safeName, file.mimetype);
+        if (cloudUpload) {
+          cloudinaryUrl = cloudUpload.url;
+          cloudinaryPublicId = cloudUpload.publicId;
+        }
+      } catch (cloudErr) {
+        console.warn('Cloudinary upload warning (using fallback):', cloudErr);
+      }
+
       const attachment = {
         id: attachmentId,
         message_id: '',
@@ -374,7 +509,16 @@ app.post(
         file_size: file.size,
         storage_key: file.filename,
         created_at: Date.now(),
+        cloudinary_url: cloudinaryUrl,
+        cloudinary_public_id: cloudinaryPublicId,
       };
+
+      let replyToData = null;
+      if (req.body.replyTo) {
+        try {
+          replyToData = typeof req.body.replyTo === 'string' ? JSON.parse(req.body.replyTo) : req.body.replyTo;
+        } catch {}
+      }
 
       const message = await db.createMessage({
         id: req.body.clientMsgId,
@@ -383,16 +527,19 @@ app.post(
         messageType: isImage ? 'image' : 'file',
         textContent: req.body.caption ? String(req.body.caption).trim() : undefined,
         attachment,
+        replyTo: replyToData,
       });
 
       attachment.message_id = message.id;
 
-      // Save binary blob to persistent database store (e.g. MongoDB) to survive Render dyno restarts!
-      try {
-        const fileBuffer = fs.readFileSync(file.path);
-        await db.saveAttachmentBlob(file.filename, fileBuffer);
-      } catch (err) {
-        console.warn('Note: Could not backup attachment blob to database:', err);
+      // Save binary blob to persistent database store to survive Render restarts if Cloudinary not active
+      if (!cloudinaryUrl) {
+        try {
+          const fileBuffer = fs.readFileSync(file.path);
+          await db.saveAttachmentBlob(file.filename, fileBuffer);
+        } catch (err) {
+          console.warn('Note: Could not backup attachment blob to database:', err);
+        }
       }
 
       await socketServer.notifyNewMessage(message);
@@ -404,7 +551,40 @@ app.post(
   }
 );
 
-// 6. Access-Controlled Attachment Serving
+// 6. Delete Message
+app.delete('/api/rooms/:roomId/messages/:messageId', requireAuth, requireRoomMember, async (req, res) => {
+  try {
+    const user = (req as any).user as User;
+    const { roomId, messageId } = req.params;
+
+    const msg = await db.getMessageById(messageId);
+    if (!msg || msg.room_id !== roomId) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+
+    // Sender or room member can delete
+    const { success, attachment } = await db.deleteMessage(messageId, roomId);
+    if (!success) {
+      res.status(500).json({ error: 'Failed to delete message' });
+      return;
+    }
+
+    // Delete from Cloudinary if stored there
+    if (attachment?.cloudinary_public_id) {
+      deleteFromCloudinary(attachment.cloudinary_public_id, attachment.mime_type).catch(() => {});
+    }
+
+    // Broadcast deletion in real-time
+    await socketServer.notifyMessageDeleted(roomId, messageId);
+
+    res.json({ success: true, messageId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete message' });
+  }
+});
+
+// 7. Access-Controlled Attachment Serving
 app.get('/api/rooms/:roomId/attachments/:storageKey', requireAuth, requireRoomMember, async (req, res) => {
   try {
     const { storageKey } = req.params;
@@ -418,6 +598,12 @@ app.get('/api/rooms/:roomId/attachments/:storageKey', requireAuth, requireRoomMe
     // Security check: Must belong to this room
     if (attachment.room_id !== req.params.roomId) {
       res.status(403).json({ error: 'Access forbidden: unauthorized attachment access' });
+      return;
+    }
+
+    // If Cloudinary URL is available, redirect to CDN for lightning-fast delivery!
+    if (attachment.cloudinary_url) {
+      res.redirect(attachment.cloudinary_url);
       return;
     }
 
@@ -454,7 +640,7 @@ app.get('/api/rooms/:roomId/attachments/:storageKey', requireAuth, requireRoomMe
   }
 });
 
-// 7. Mark Messages as Read
+// 8. Mark Messages as Read
 app.patch('/api/rooms/:roomId/messages/read', requireAuth, requireRoomMember, async (req, res) => {
   try {
     const user = (req as any).user as User;
@@ -477,7 +663,7 @@ app.patch('/api/rooms/:roomId/messages/read', requireAuth, requireRoomMember, as
   }
 });
 
-// 8. Search Messages in Room
+// 9. Search Messages in Room
 app.get('/api/rooms/:roomId/search', requireAuth, requireRoomMember, async (req, res) => {
   try {
     const roomId = req.params.roomId;
@@ -489,7 +675,7 @@ app.get('/api/rooms/:roomId/search', requireAuth, requireRoomMember, async (req,
   }
 });
 
-// 9. Shared Media (Photos & Files)
+// 10. Shared Media (Photos & Files)
 app.get('/api/rooms/:roomId/shared-media', requireAuth, requireRoomMember, async (req, res) => {
   try {
     const roomId = req.params.roomId;
@@ -500,7 +686,7 @@ app.get('/api/rooms/:roomId/shared-media', requireAuth, requireRoomMember, async
   }
 });
 
-// 10. Leave Room
+// 11. Leave Room
 app.post('/api/rooms/:roomId/leave', requireAuth, requireRoomMember, (_req, res) => {
   res.json({ success: true });
 });
@@ -527,7 +713,7 @@ async function startServer() {
 
   const distPath = path.resolve(process.cwd(), 'dist');
   const distIndexExists = fs.existsSync(path.join(distPath, 'index.html'));
-  const serveStatic = isProduction || process.env.RENDER === 'true' || distIndexExists;
+  const serveStatic = (isProduction || process.env.RENDER === 'true') && distIndexExists;
 
   if (!serveStatic) {
     console.log('[Server] Starting in development mode with Vite middlewares (allowing all hosts)');

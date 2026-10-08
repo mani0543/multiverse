@@ -41,6 +41,17 @@ export interface MessageAttachment {
   file_size: number;
   storage_key: string;
   created_at: number;
+  cloudinary_url?: string;
+  cloudinary_public_id?: string;
+}
+
+export interface ReplyToPreview {
+  id: string;
+  sender_id: string;
+  sender_name?: string;
+  text_content?: string;
+  message_type: 'text' | 'image' | 'file';
+  file_name?: string;
 }
 
 export interface Message {
@@ -54,6 +65,31 @@ export interface Message {
   delivered_at?: number | null;
   read_at?: number | null;
   attachment?: MessageAttachment;
+  reply_to?: ReplyToPreview | null;
+}
+
+export interface AdminRoomOverview {
+  room: {
+    id: string;
+    token: string;
+    createdAt: number;
+    updatedAt: number;
+    status: string;
+  };
+  members: {
+    id: string;
+    userId: string;
+    displayName: string;
+    joinedAt: number;
+    role: string;
+  }[];
+  messageCount: number;
+  lastMessage?: {
+    text?: string;
+    type: string;
+    createdAt: number;
+    senderId: string;
+  };
 }
 
 export interface IDatabaseStore {
@@ -78,9 +114,11 @@ export interface IDatabaseStore {
     messageType: 'text' | 'image' | 'file';
     textContent?: string;
     attachment?: MessageAttachment;
+    replyTo?: ReplyToPreview | null;
   }): Promise<Message>;
   getMessages(roomId: string, limit?: number, beforeTimestamp?: number): Promise<{ messages: Message[]; hasMore: boolean }>;
   getMessageById(messageId: string): Promise<Message | undefined>;
+  deleteMessage(messageId: string, roomId: string): Promise<{ success: boolean; attachment?: MessageAttachment }>;
   markDelivered(roomId: string, recipientUserId: string): Promise<string[]>;
   markRead(roomId: string, readerUserId: string): Promise<string[]>;
   searchMessages(roomId: string, query: string): Promise<Message[]>;
@@ -88,6 +126,8 @@ export interface IDatabaseStore {
   getAttachmentByStorageKey(storageKey: string): Promise<MessageAttachment | undefined>;
   saveAttachmentBlob(storageKey: string, buffer: Buffer): Promise<void>;
   getAttachmentBlob(storageKey: string): Promise<Buffer | null>;
+  getAllRoomsForAdmin(): Promise<AdminRoomOverview[]>;
+  deleteRoomForAdmin(roomId: string): Promise<boolean>;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
@@ -333,6 +373,7 @@ class JsonFileDbStore implements IDatabaseStore {
     messageType: 'text' | 'image' | 'file';
     textContent?: string;
     attachment?: MessageAttachment;
+    replyTo?: ReplyToPreview | null;
   }): Promise<Message> {
     const id = params.id || `msg_${crypto.randomUUID()}`;
     const now = Date.now();
@@ -348,6 +389,7 @@ class JsonFileDbStore implements IDatabaseStore {
       delivered_at: null,
       read_at: null,
       attachment: params.attachment,
+      reply_to: params.replyTo || null,
     };
 
     this.data.messages[id] = message;
@@ -383,6 +425,20 @@ class JsonFileDbStore implements IDatabaseStore {
 
   async getMessageById(messageId: string): Promise<Message | undefined> {
     return this.data.messages[messageId];
+  }
+
+  async deleteMessage(messageId: string, roomId: string): Promise<{ success: boolean; attachment?: MessageAttachment }> {
+    const msg = this.data.messages[messageId];
+    if (!msg || msg.room_id !== roomId) {
+      return { success: false };
+    }
+    const attachment = msg.attachment;
+    if (attachment) {
+      delete this.data.attachments[attachment.id];
+    }
+    delete this.data.messages[messageId];
+    this.save();
+    return { success: true, attachment };
   }
 
   async markDelivered(roomId: string, recipientUserId: string): Promise<string[]> {
@@ -470,6 +526,67 @@ class JsonFileDbStore implements IDatabaseStore {
       return fs.readFileSync(filePath);
     }
     return null;
+  }
+
+  async getAllRoomsForAdmin(): Promise<AdminRoomOverview[]> {
+    const overviews: AdminRoomOverview[] = [];
+    for (const room of Object.values(this.data.chat_rooms)) {
+      const members = Object.values(this.data.room_members)
+        .filter((m) => m.room_id === room.id)
+        .map((m) => {
+          const u = this.data.users[m.user_id];
+          return {
+            id: m.id,
+            userId: m.user_id,
+            displayName: u?.display_name || 'Anonymous',
+            joinedAt: m.joined_at,
+            role: m.role,
+          };
+        });
+
+      const msgs = Object.values(this.data.messages)
+        .filter((msg) => msg.room_id === room.id)
+        .sort((a, b) => b.created_at - a.created_at);
+
+      const last = msgs[0];
+
+      overviews.push({
+        room: {
+          id: room.id,
+          token: room.room_token,
+          createdAt: room.created_at,
+          updatedAt: room.updated_at,
+          status: room.status,
+        },
+        members,
+        messageCount: msgs.length,
+        lastMessage: last
+          ? {
+              text: last.text_content,
+              type: last.message_type,
+              createdAt: last.created_at,
+              senderId: last.sender_id,
+            }
+          : undefined,
+      });
+    }
+
+    return overviews.sort((a, b) => b.room.updatedAt - a.room.updatedAt);
+  }
+
+  async deleteRoomForAdmin(roomId: string): Promise<boolean> {
+    delete this.data.chat_rooms[roomId];
+    for (const [id, mem] of Object.entries(this.data.room_members)) {
+      if (mem.room_id === roomId) delete this.data.room_members[id];
+    }
+    for (const [id, msg] of Object.entries(this.data.messages)) {
+      if (msg.room_id === roomId) delete this.data.messages[id];
+    }
+    for (const [id, att] of Object.entries(this.data.attachments)) {
+      if (att.room_id === roomId) delete this.data.attachments[id];
+    }
+    this.save();
+    return true;
   }
 }
 
@@ -718,6 +835,7 @@ class MongoDbStore implements IDatabaseStore {
     messageType: 'text' | 'image' | 'file';
     textContent?: string;
     attachment?: MessageAttachment;
+    replyTo?: ReplyToPreview | null;
   }): Promise<Message> {
     const id = params.id || `msg_${crypto.randomUUID()}`;
     const now = Date.now();
@@ -733,6 +851,7 @@ class MongoDbStore implements IDatabaseStore {
       delivered_at: null,
       read_at: null,
       attachment: params.attachment,
+      reply_to: params.replyTo || null,
     };
 
     await this.db.collection<Message>('messages').insertOne({ ...message });
@@ -770,6 +889,20 @@ class MongoDbStore implements IDatabaseStore {
   async getMessageById(messageId: string): Promise<Message | undefined> {
     const doc = await this.db.collection<Message>('messages').findOne({ id: messageId });
     return doc || undefined;
+  }
+
+  async deleteMessage(messageId: string, roomId: string): Promise<{ success: boolean; attachment?: MessageAttachment }> {
+    const msg = await this.db.collection<Message>('messages').findOne({ id: messageId, room_id: roomId });
+    if (!msg) {
+      return { success: false };
+    }
+    const attachment = msg.attachment;
+    await this.db.collection<Message>('messages').deleteOne({ id: messageId, room_id: roomId });
+    if (attachment) {
+      await this.db.collection('attachments').deleteOne({ id: attachment.id });
+      await this.db.collection('attachment_blobs').deleteOne({ storage_key: attachment.storage_key });
+    }
+    return { success: true, attachment };
   }
 
   async markDelivered(roomId: string, recipientUserId: string): Promise<string[]> {
@@ -883,6 +1016,66 @@ class MongoDbStore implements IDatabaseStore {
     }
 
     return null;
+  }
+
+  async getAllRoomsForAdmin(): Promise<AdminRoomOverview[]> {
+    const rooms = await this.db.collection<ChatRoom>('chat_rooms').find({}).sort({ updated_at: -1 }).toArray();
+    const overviews: AdminRoomOverview[] = [];
+
+    for (const room of rooms) {
+      const rawMembers = await this.db.collection<RoomMember>('room_members').find({ room_id: room.id }).toArray();
+      const members = await Promise.all(
+        rawMembers.map(async (m) => {
+          const u = await this.getUserById(m.user_id);
+          return {
+            id: m.id,
+            userId: m.user_id,
+            displayName: u?.display_name || 'Anonymous',
+            joinedAt: m.joined_at,
+            role: m.role,
+          };
+        })
+      );
+
+      const messageCount = await this.db.collection('messages').countDocuments({ room_id: room.id });
+      const last = await this.db.collection<Message>('messages')
+        .find({ room_id: room.id })
+        .sort({ created_at: -1 })
+        .limit(1)
+        .toArray();
+
+      const lastMsg = last[0];
+
+      overviews.push({
+        room: {
+          id: room.id,
+          token: room.room_token,
+          createdAt: room.created_at,
+          updatedAt: room.updated_at,
+          status: room.status,
+        },
+        members,
+        messageCount,
+        lastMessage: lastMsg
+          ? {
+              text: lastMsg.text_content,
+              type: lastMsg.message_type,
+              createdAt: lastMsg.created_at,
+              senderId: lastMsg.sender_id,
+            }
+          : undefined,
+      });
+    }
+
+    return overviews;
+  }
+
+  async deleteRoomForAdmin(roomId: string): Promise<boolean> {
+    await this.db.collection('chat_rooms').deleteOne({ id: roomId });
+    await this.db.collection('room_members').deleteMany({ room_id: roomId });
+    await this.db.collection('messages').deleteMany({ room_id: roomId });
+    await this.db.collection('attachments').deleteMany({ room_id: roomId });
+    return true;
   }
 }
 
@@ -1055,6 +1248,7 @@ class DatabaseManager implements IDatabaseStore {
     messageType: 'text' | 'image' | 'file';
     textContent?: string;
     attachment?: MessageAttachment;
+    replyTo?: ReplyToPreview | null;
   }): Promise<Message> {
     const store = await this.ensureReady();
     return store.createMessage(params);
@@ -1068,6 +1262,11 @@ class DatabaseManager implements IDatabaseStore {
   async getMessageById(messageId: string): Promise<Message | undefined> {
     const store = await this.ensureReady();
     return store.getMessageById(messageId);
+  }
+
+  async deleteMessage(messageId: string, roomId: string): Promise<{ success: boolean; attachment?: MessageAttachment }> {
+    const store = await this.ensureReady();
+    return store.deleteMessage(messageId, roomId);
   }
 
   async markDelivered(roomId: string, recipientUserId: string): Promise<string[]> {
@@ -1103,6 +1302,16 @@ class DatabaseManager implements IDatabaseStore {
   async getAttachmentBlob(storageKey: string): Promise<Buffer | null> {
     const store = await this.ensureReady();
     return store.getAttachmentBlob(storageKey);
+  }
+
+  async getAllRoomsForAdmin(): Promise<AdminRoomOverview[]> {
+    const store = await this.ensureReady();
+    return store.getAllRoomsForAdmin();
+  }
+
+  async deleteRoomForAdmin(roomId: string): Promise<boolean> {
+    const store = await this.ensureReady();
+    return store.deleteRoomForAdmin(roomId);
   }
 }
 

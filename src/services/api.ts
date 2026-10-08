@@ -1,7 +1,8 @@
-import type { ChatRoom, Message, User } from '../types.js';
+import type { ChatRoom, Message, User, ReplyToPreview, AdminRoomOverview } from '../types.js';
 
 class ApiService {
   private token: string | null = null;
+  private adminToken: string | null = null;
 
   public setToken(token: string | null) {
     this.token = token;
@@ -11,12 +12,20 @@ class ApiService {
     return this.token;
   }
 
+  public setAdminToken(token: string | null) {
+    this.adminToken = token;
+  }
+
+  public getAdminToken(): string | null {
+    return this.adminToken;
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const headers: Record<string, string> = {
       ...(options.headers as Record<string, string>),
     };
 
-    if (this.token) {
+    if (this.token && !headers['Authorization']) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
@@ -33,6 +42,33 @@ class ApiService {
 
     if (!res.ok) {
       throw new Error(data.error || `Request failed with status ${res.status}`);
+    }
+
+    return data as T;
+  }
+
+  private async adminRequest<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string>),
+    };
+
+    if (this.adminToken) {
+      headers['Authorization'] = `Bearer ${this.adminToken}`;
+    }
+
+    if (!(options.body instanceof FormData) && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const res = await fetch(endpoint, {
+      ...options,
+      headers,
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      throw new Error(data.error || `Admin request failed with status ${res.status}`);
     }
 
     return data as T;
@@ -100,11 +136,12 @@ class ApiService {
   public async sendMessage(
     roomId: string,
     text: string,
-    clientMsgId?: string
+    clientMsgId?: string,
+    replyTo?: ReplyToPreview | null
   ): Promise<{ message: Message }> {
     return this.request<{ message: Message }>(`/api/rooms/${roomId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ text, clientMsgId }),
+      body: JSON.stringify({ text, clientMsgId, replyTo }),
     });
   }
 
@@ -113,6 +150,7 @@ class ApiService {
     file: File,
     caption?: string,
     clientMsgId?: string,
+    replyTo?: ReplyToPreview | null,
     onProgress?: (percent: number) => void
   ): Promise<{ message: Message }> {
     return new Promise((resolve, reject) => {
@@ -153,8 +191,15 @@ class ApiService {
       formData.append('file', file);
       if (caption) formData.append('caption', caption);
       if (clientMsgId) formData.append('clientMsgId', clientMsgId);
+      if (replyTo) formData.append('replyTo', JSON.stringify(replyTo));
 
       xhr.send(formData);
+    });
+  }
+
+  public async deleteMessage(roomId: string, messageId: string): Promise<{ success: boolean; messageId: string }> {
+    return this.request<{ success: boolean; messageId: string }>(`/api/rooms/${roomId}/messages/${messageId}`, {
+      method: 'DELETE',
     });
   }
 
@@ -175,6 +220,40 @@ class ApiService {
 
   public getAttachmentUrl(roomId: string, storageKey: string, download = false): string {
     return `/api/rooms/${roomId}/attachments/${storageKey}${download ? '?download=true' : ''}`;
+  }
+
+  // --- Super Admin Endpoints ---
+  public async adminLogin(password: string, username = 'admin'): Promise<{ success: boolean; token: string }> {
+    const res = await this.adminRequest<{ success: boolean; token: string }>('/api/admin/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    this.adminToken = res.token;
+    return res;
+  }
+
+  public async adminGetRooms(): Promise<{ rooms: AdminRoomOverview[]; total: number }> {
+    return this.adminRequest<{ rooms: AdminRoomOverview[]; total: number }>('/api/admin/rooms');
+  }
+
+  public async adminGetRoomMessages(roomId: string): Promise<{ room: ChatRoom; messages: Message[] }> {
+    return this.adminRequest<{ room: ChatRoom; messages: Message[] }>(`/api/admin/rooms/${roomId}/messages`);
+  }
+
+  public async adminDeleteMessage(roomId: string, messageId: string): Promise<{ success: boolean }> {
+    return this.adminRequest<{ success: boolean }>(`/api/admin/rooms/${roomId}/messages/${messageId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  public async adminDeleteRoom(roomId: string): Promise<{ success: boolean }> {
+    return this.adminRequest<{ success: boolean }>(`/api/admin/rooms/${roomId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  public async adminGetStats(): Promise<{ totalRooms: number; totalMessages: number; database: any; cloudinary: string }> {
+    return this.adminRequest<{ totalRooms: number; totalMessages: number; database: any; cloudinary: string }>('/api/admin/stats');
   }
 }
 

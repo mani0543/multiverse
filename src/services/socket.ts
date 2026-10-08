@@ -1,6 +1,7 @@
 import type { ConnectionState, Message } from '../types.js';
 
 type MessageCallback = (msg: Message) => void;
+type MessageDeletedCallback = (data: { roomId: string; messageId: string }) => void;
 type DeliveredCallback = (data: { roomId: string; messageIds: string[]; deliveredAt: number }) => void;
 type ReadCallback = (data: { roomId: string; messageIds: string[]; readerId: string; readAt: number }) => void;
 type TypingCallback = (data: { roomId: string; userId: string; isTyping: boolean }) => void;
@@ -20,6 +21,7 @@ class SocketClient {
 
   // Listeners
   private messageListeners: Set<MessageCallback> = new Set();
+  private messageDeletedListeners: Set<MessageDeletedCallback> = new Set();
   private deliveredListeners: Set<DeliveredCallback> = new Set();
   private readListeners: Set<ReadCallback> = new Set();
   private typingListeners: Set<TypingCallback> = new Set();
@@ -108,6 +110,10 @@ class SocketClient {
         if (payload.message) {
           this.messageListeners.forEach((cb) => cb(payload.message));
         }
+        break;
+
+      case 'message:deleted':
+        this.messageDeletedListeners.forEach((cb) => cb(payload));
         break;
 
       case 'messages:delivered':
@@ -209,6 +215,11 @@ class SocketClient {
   public onMessage(cb: MessageCallback) {
     this.messageListeners.add(cb);
     return () => this.messageListeners.delete(cb);
+  }
+
+  public onMessageDeleted(cb: MessageDeletedCallback) {
+    this.messageDeletedListeners.add(cb);
+    return () => this.messageDeletedListeners.delete(cb);
   }
 
   public onDelivered(cb: DeliveredCallback) {

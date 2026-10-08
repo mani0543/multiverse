@@ -319,6 +319,14 @@ export class ChatSocketServer {
     });
   }
 
+  public async notifyMessageDeleted(roomId: string, messageId: string) {
+    await this.broadcastToRoom(roomId, {
+      type: 'message:deleted',
+      roomId,
+      messageId,
+    });
+  }
+
   public isUserOnline(userId: string): boolean {
     const sockets = this.userSockets.get(userId);
     return !!(sockets && sockets.size > 0);
