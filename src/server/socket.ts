@@ -50,10 +50,10 @@ export class ChatSocketServer {
       if (conn) conn.isAlive = true;
     });
 
-    ws.on('message', (data: Buffer | string) => {
+    ws.on('message', async (data: Buffer | string) => {
       try {
         const payload = JSON.parse(data.toString());
-        this.handleMessage(ws, payload);
+        await this.handleMessage(ws, payload);
       } catch (err) {
         console.error('Invalid WS payload received:', err);
       }
@@ -69,7 +69,7 @@ export class ChatSocketServer {
     });
   }
 
-  private handleMessage(ws: WebSocket, payload: any) {
+  private async handleMessage(ws: WebSocket, payload: any) {
     const { type } = payload;
 
     switch (type) {
@@ -80,7 +80,7 @@ export class ChatSocketServer {
           return;
         }
 
-        const user = db.getUserByToken(token);
+        const user = await db.getUserByToken(token);
         if (!user) {
           ws.send(JSON.stringify({ type: 'error', message: 'Invalid authentication session' }));
           return;
@@ -100,10 +100,10 @@ export class ChatSocketServer {
         }
         this.userSockets.get(user.id)!.add(ws);
 
-        db.updateUserLastSeen(user.id);
+        await db.updateUserLastSeen(user.id);
 
         if (roomId) {
-          this.handleJoinRoom(ws, user, roomId);
+          await this.handleJoinRoom(ws, user, roomId);
         }
 
         ws.send(
@@ -130,9 +130,9 @@ export class ChatSocketServer {
       case 'message:read': {
         const conn = this.clients.get(ws);
         if (!conn || !conn.roomId) return;
-        const updatedIds = db.markRead(conn.roomId, conn.user.id);
+        const updatedIds = await db.markRead(conn.roomId, conn.user.id);
         if (updatedIds.length > 0) {
-          this.broadcastToRoom(conn.roomId, {
+          await this.broadcastToRoom(conn.roomId, {
             type: 'messages:read',
             roomId: conn.roomId,
             readerId: conn.user.id,
@@ -152,14 +152,14 @@ export class ChatSocketServer {
     }
   }
 
-  private handleJoinRoom(ws: WebSocket, user: User, roomId: string) {
-    const room = db.getRoomById(roomId);
+  private async handleJoinRoom(ws: WebSocket, user: User, roomId: string) {
+    const room = await db.getRoomById(roomId);
     if (!room) {
       ws.send(JSON.stringify({ type: 'error', message: 'Room not found' }));
       return;
     }
 
-    const member = db.getMember(roomId, user.id);
+    const member = await db.getMember(roomId, user.id);
     if (!member) {
       ws.send(JSON.stringify({ type: 'error', message: 'Not a member of this chat' }));
       return;
@@ -176,7 +176,7 @@ export class ChatSocketServer {
     this.roomUsers.get(roomId)!.add(user.id);
 
     // Find peer in room
-    const members = db.getRoomMembers(roomId);
+    const members = await db.getRoomMembers(roomId);
     const peerMember = members.find((m) => m.user_id !== user.id);
     let peerOnline = false;
     let peerLastSeen: number | undefined;
@@ -184,7 +184,7 @@ export class ChatSocketServer {
     if (peerMember) {
       const peerSockets = this.userSockets.get(peerMember.user_id);
       peerOnline = !!(peerSockets && peerSockets.size > 0);
-      const peerUser = db.getUserById(peerMember.user_id);
+      const peerUser = await db.getUserById(peerMember.user_id);
       peerLastSeen = peerUser?.last_seen;
     }
 
@@ -199,7 +199,7 @@ export class ChatSocketServer {
     );
 
     // Broadcast to room that user is online
-    this.broadcastToRoom(
+    await this.broadcastToRoom(
       roomId,
       {
         type: 'presence',
@@ -211,9 +211,9 @@ export class ChatSocketServer {
     );
 
     // Any messages previously sent to this user can now be marked delivered
-    const deliveredIds = db.markDelivered(roomId, user.id);
+    const deliveredIds = await db.markDelivered(roomId, user.id);
     if (deliveredIds.length > 0) {
-      this.broadcastToRoom(roomId, {
+      await this.broadcastToRoom(roomId, {
         type: 'messages:delivered',
         roomId,
         messageIds: deliveredIds,
@@ -252,7 +252,7 @@ export class ChatSocketServer {
     }
   }
 
-  private handleDisconnect(ws: WebSocket) {
+  private async handleDisconnect(ws: WebSocket) {
     const conn = this.clients.get(ws);
     if (!conn) return;
 
@@ -262,7 +262,7 @@ export class ChatSocketServer {
       userSockets.delete(ws);
       if (userSockets.size === 0) {
         this.userSockets.delete(conn.user.id);
-        db.updateUserLastSeen(conn.user.id);
+        await db.updateUserLastSeen(conn.user.id);
 
         // Notify rooms user was in
         if (conn.roomId) {
@@ -270,7 +270,7 @@ export class ChatSocketServer {
           if (room) {
             room.delete(conn.user.id);
           }
-          this.broadcastToRoom(conn.roomId, {
+          await this.broadcastToRoom(conn.roomId, {
             type: 'presence',
             roomId: conn.roomId,
             userId: conn.user.id,
@@ -284,8 +284,8 @@ export class ChatSocketServer {
     }
   }
 
-  public broadcastToRoom(roomId: string, message: any, excludeWs?: WebSocket) {
-    const members = db.getRoomMembers(roomId);
+  public async broadcastToRoom(roomId: string, message: any, excludeWs?: WebSocket) {
+    const members = await db.getRoomMembers(roomId);
     const payload = JSON.stringify(message);
 
     for (const mem of members) {
@@ -300,9 +300,9 @@ export class ChatSocketServer {
     }
   }
 
-  public notifyNewMessage(message: Message) {
+  public async notifyNewMessage(message: Message) {
     // Check if peer is online in the room to set delivered status
-    const members = db.getRoomMembers(message.room_id);
+    const members = await db.getRoomMembers(message.room_id);
     const peerMember = members.find((m) => m.user_id !== message.sender_id);
 
     if (peerMember) {
@@ -310,11 +310,10 @@ export class ChatSocketServer {
       if (peerSockets && peerSockets.size > 0) {
         // Peer is online!
         message.delivered_at = Date.now();
-        db.save();
       }
     }
 
-    this.broadcastToRoom(message.room_id, {
+    await this.broadcastToRoom(message.room_id, {
       type: 'message:new',
       message,
     });

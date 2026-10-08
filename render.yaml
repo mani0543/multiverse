@@ -8,4 +8,6 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-    healthCheckPath: /api/auth/me
+      - key: MONGODB_URI
+        sync: false
+    healthCheckPath: /api/health

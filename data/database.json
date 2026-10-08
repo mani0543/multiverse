@@ -1,7 +1,45 @@
 {
-  "users": {},
-  "chat_rooms": {},
-  "room_members": {},
-  "messages": {},
+  "users": {
+    "usr_b74b8bbf-6bd0-4232-aa9b-b002210be409": {
+      "id": "usr_b74b8bbf-6bd0-4232-aa9b-b002210be409",
+      "display_name": "MongoCheckUser",
+      "session_token": "tok_c410f2ea3b66b425da6a20ee2dbfdcc3bff908d8da30fc1fe1a56dfe1804eb3e",
+      "created_at": 1791468269455,
+      "updated_at": 1791468269570,
+      "last_seen": 1791468269570
+    }
+  },
+  "chat_rooms": {
+    "room_adada3cc-a112-4f10-8e4a-34c131f0e988": {
+      "id": "room_adada3cc-a112-4f10-8e4a-34c131f0e988",
+      "room_token": "b0aa832487e978bb8431b7f1da07cd72",
+      "created_by": "usr_b74b8bbf-6bd0-4232-aa9b-b002210be409",
+      "created_at": 1791468269546,
+      "updated_at": 1791468269572,
+      "status": "active"
+    }
+  },
+  "room_members": {
+    "mem_8c7d30ad-e203-4528-950a-9c2f30f679d6": {
+      "id": "mem_8c7d30ad-e203-4528-950a-9c2f30f679d6",
+      "room_id": "room_adada3cc-a112-4f10-8e4a-34c131f0e988",
+      "user_id": "usr_b74b8bbf-6bd0-4232-aa9b-b002210be409",
+      "joined_at": 1791468269546,
+      "role": "creator"
+    }
+  },
+  "messages": {
+    "msg_f6697a03-196b-404f-a648-e27f48dfbefd": {
+      "id": "msg_f6697a03-196b-404f-a648-e27f48dfbefd",
+      "room_id": "room_adada3cc-a112-4f10-8e4a-34c131f0e988",
+      "sender_id": "usr_b74b8bbf-6bd0-4232-aa9b-b002210be409",
+      "message_type": "text",
+      "text_content": "Testing MongoDB-compatible architecture",
+      "created_at": 1791468269572,
+      "updated_at": 1791468269572,
+      "delivered_at": null,
+      "read_at": null
+    }
+  },
   "attachments": {}
 }
